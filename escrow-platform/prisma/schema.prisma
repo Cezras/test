@@ -1,0 +1,334 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  ADMIN
+  BUYER
+  SELLER
+}
+
+enum TransactionStatus {
+  CREATED
+  WAITING_PAYMENT
+  PAID
+  DELIVERED
+  COMPLETED
+  DISPUTE
+  REFUNDED
+  CANCELLED
+}
+
+enum PaymentMethod {
+  QRIS
+  DANA
+  BCA_VA
+  BNI_VA
+  MANDIRI_VA
+  BRI_VA
+  MANUAL_TRANSFER
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  EXPIRED
+}
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+  CLOSED
+}
+
+enum DisputeResolution {
+  RELEASE_TO_SELLER
+  REFUND_BUYER
+  PARTIAL_SETTLEMENT
+}
+
+enum AuditAction {
+  USER_REGISTER
+  USER_LOGIN
+  USER_LOGOUT
+  TRANSACTION_CREATE
+  TRANSACTION_UPDATE
+  PAYMENT_INITIATE
+  PAYMENT_COMPLETE
+  WITHDRAW_REQUEST
+  WITHDRAW_APPROVE
+  WITHDRAW_REJECT
+  DISPUTE_OPEN
+  DISPUTE_RESOLVE
+  ADMIN_OVERRIDE
+  FEE_UPDATE
+  USER_SUSPEND
+  USER_UNSUSPEND
+}
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  passwordHash  String
+  fullName      String
+  phone         String?
+  role          UserRole  @default(BUYER)
+  isVerified    Boolean   @default(false)
+  isSuspended   Boolean   @default(false)
+  emailToken    String?
+  emailExpires  DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  wallet        Wallet?
+  bankAccounts  BankAccount[]
+  transactions  EscrowParticipant[]
+  payments      Payment[]
+  withdrawals   Withdrawal[]
+  messages      Message[]
+  auditLogs     AuditLog[]
+
+  @@index([email])
+  @@index([role])
+  @@index([deletedAt])
+}
+
+model Wallet {
+  id              String   @id @default(uuid())
+  userId          String   @unique
+  balance         BigInt   @default(0)
+  currency        String   @default("IDR")
+  lockedBalance   BigInt   @default(0)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user            User             @relation(fields: [userId], references: [id])
+  transactions    WalletTransaction[]
+
+  @@index([userId])
+}
+
+model WalletTransaction {
+  id            String   @id @default(uuid())
+  walletId      String
+  type          String
+  amount        BigInt
+  balanceBefore BigInt
+  balanceAfter  BigInt
+  referenceType String?
+  referenceId   String?
+  description   String?
+  createdAt     DateTime @default(now())
+
+  wallet        Wallet @relation(fields: [walletId], references: [id])
+
+  @@index([walletId])
+  @@index([referenceType, referenceId])
+}
+
+model EscrowTransaction {
+  id              String           @id @default(uuid())
+  title           String
+  description     String?
+  amount          BigInt
+  platformFee     BigInt
+  totalAmount     BigInt
+  status          TransactionStatus @default(CREATED)
+  expiresAt       DateTime?
+  completedAt     DateTime?
+  metadata        Json?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  deletedAt       DateTime?
+
+  participants    EscrowParticipant[]
+  payments        Payment[]
+  disputes        Dispute[]
+  deliveryProofs  DeliveryProof[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([deletedAt])
+}
+
+model EscrowParticipant {
+  id              String   @id @default(uuid())
+  transactionId   String
+  userId          String
+  role            String
+  joinedAt        DateTime @default(now())
+
+  transaction     EscrowTransaction @relation(fields: [transactionId], references: [id])
+  user            User              @relation(fields: [userId], references: [id])
+
+  @@unique([transactionId, userId])
+  @@index([transactionId])
+  @@index([userId])
+}
+
+model Payment {
+  id                  String      @id @default(uuid())
+  transactionId       String
+  userId              String
+  method              PaymentMethod
+  status              PaymentStatus @default(PENDING)
+  amount              BigInt
+  gatewayReference    String?
+  gatewayResponse     Json?
+  vaNumber            String?
+  qrCodeUrl           String?
+  proofImageUrl       String?
+  paidAt              DateTime?
+  expiresAt           DateTime?
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  transaction         EscrowTransaction @relation(fields: [transactionId], references: [id])
+  user                User              @relation(fields: [userId], references: [id])
+
+  @@index([transactionId])
+  @@index([userId])
+  @@index([status])
+  @@index([gatewayReference])
+}
+
+model DeliveryProof {
+  id            String   @id @default(uuid())
+  transactionId String
+  uploadedBy    String
+  imageUrl      String
+  description   String?
+  createdAt     DateTime @default(now())
+
+  transaction   EscrowTransaction @relation(fields: [transactionId], references: [id])
+
+  @@index([transactionId])
+}
+
+model Dispute {
+  id              String           @id @default(uuid())
+  transactionId   String
+  openedBy        String
+  reason          String
+  description     String
+  status          DisputeStatus    @default(OPEN)
+  resolution      DisputeResolution?
+  resolvedBy      String?
+  settlementAmount BigInt?
+  notes           String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  resolvedAt      DateTime?
+
+  transaction     EscrowTransaction @relation(fields: [transactionId], references: [id])
+  evidence        DisputeEvidence[]
+
+  @@index([transactionId])
+  @@index([status])
+}
+
+model DisputeEvidence {
+  id          String   @id @default(uuid())
+  disputeId   String
+  uploadedBy  String
+  fileType    String
+  fileUrl     String
+  description String?
+  createdAt   DateTime @default(now())
+
+  dispute     Dispute @relation(fields: [disputeId], references: [id])
+
+  @@index([disputeId])
+}
+
+model BankAccount {
+  id            String   @id @default(uuid())
+  userId        String
+  bankName      String
+  accountNumber String
+  accountName   String
+  isPrimary     Boolean  @default(false)
+  isVerified    Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  deletedAt     DateTime?
+
+  user          User @relation(fields: [userId], references: [id])
+  withdrawals   Withdrawal[]
+
+  @@index([userId])
+  @@index([deletedAt])
+}
+
+model Withdrawal {
+  id              String   @id @default(uuid())
+  userId          String
+  bankAccountId   String
+  amount          BigInt
+  fee             BigInt   @default(0)
+  netAmount       BigInt
+  status          String   @default("PENDING")
+  processedBy     String?
+  processedAt     DateTime?
+  rejectionReason String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  user            User        @relation(fields: [userId], references: [id])
+  bankAccount     BankAccount @relation(fields: [bankAccountId], references: [id])
+
+  @@index([userId])
+  @@index([status])
+}
+
+model Message {
+  id            String   @id @default(uuid())
+  transactionId String?
+  senderId      String
+  content       String
+  isAdmin       Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  deletedAt     DateTime?
+
+  sender        User @relation(fields: [senderId], references: [id])
+
+  @@index([transactionId])
+  @@index([senderId])
+}
+
+model AuditLog {
+  id          String     @id @default(uuid())
+  userId      String?
+  action      AuditAction
+  entityType  String?
+  entityId    String?
+  details     Json?
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime   @default(now())
+
+  user        User? @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([action])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+}
+
+model PlatformConfig {
+  id                String   @id @default(uuid())
+  key               String   @unique
+  value             String
+  description       String?
+  updatedAt         DateTime @updatedAt
+
+  @@index([key])
+}
